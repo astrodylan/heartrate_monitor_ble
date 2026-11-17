@@ -1,0 +1,17 @@
+# Python cache & environments
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# PyInstaller local build outputs
+build/
+dist/
+*.spec
+
+# Local database & user config
+*.db
+config.json
+
+# Personal notes
+note.txt
