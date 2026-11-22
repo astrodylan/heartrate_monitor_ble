@@ -47,14 +47,23 @@ class BLEWorker:
         asyncio.run_coroutine_threadsafe(self._scan(), self.loop)
 
     async def _scan(self):
-        self.bridge.status_changed.emit("Scanning for BLE devices...", False)
+        self.bridge.status_changed.emit("Scanning for HR monitors...", False)
         try:
-            devices = await BleakScanner.discover(timeout=4.0)
-            found = [(d.name or "Unknown Device", d.address) for d in devices]
+            devices = await BleakScanner.discover(timeout=6.0, return_adv=True, scanning_mode="active")
+            found = []
+            for d, adv in devices.values():
+                name = d.name or adv.local_name or "Unknown Device"
+                uuids = [u.lower() for u in (adv.service_uuids or [])]
+                if "0000180d-0000-1000-8000-00805f9b34fb" in uuids or "h6" in name.lower() or "coospo" in name.lower():
+                    found.insert(0, (f"❤️ {name}", d.address))
+                else:
+                    found.append((name, d.address))
+
             self.bridge.scan_finished.emit(found)
-            self.bridge.status_changed.emit("Scan complete.", False)
+            self.bridge.status_changed.emit(f"Found {len(found)} devices.", False)
         except Exception as e:
             self.bridge.status_changed.emit(f"Scan error: {e}", False)
+
 
     def connect_device(self, address: str):
         self.target_address = address
