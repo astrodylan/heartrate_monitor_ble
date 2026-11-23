@@ -92,7 +92,16 @@ class BLEWorker:
         try:
             devices = await BleakScanner.discover(timeout=6.0, return_adv=True, scanning_mode="active")
             found = []
+            seen_addrs = set()
+
+            # Include currently connected band first (BLE stops advertising while connected)
+            if self.client and self.client.is_connected and self.target_address:
+                found.append(("❤️ Connected Band", self.target_address))
+                seen_addrs.add(self.target_address.lower())
+
             for d, adv in devices.values():
+                if d.address.lower() in seen_addrs:
+                    continue
                 name = d.name or adv.local_name or "Unknown Device"
                 uuids = [u.lower() for u in (adv.service_uuids or [])]
                 if "0000180d-0000-1000-8000-00805f9b34fb" in uuids or "h6" in name.lower() or "coospo" in name.lower():
@@ -101,11 +110,11 @@ class BLEWorker:
                     found.append((name, d.address))
 
             self.bridge.scan_finished.emit(found)
-            self.bridge.status_changed.emit(f"Found {len(found)} devices.", False)
+            self.bridge.status_changed.emit(f"Found {len(found)} devices.", self.client.is_connected if self.client else False)
         except Exception as e:
             self.bridge.status_changed.emit(f"Scan error: {e}", False)
 
-    def connect_device(self, address: str, max_retry_sec: float = 10.0):
+    def connect_device(self, address: str, max_retry_sec: float = 20.0):
         self.target_address = address
         self.manual_disconnect = False
         asyncio.run_coroutine_threadsafe(self._connect_with_retry(max_retry_sec), self.loop)
@@ -127,9 +136,9 @@ class BLEWorker:
         if self.manual_disconnect:
             self.bridge.status_changed.emit("Disconnected", False)
             return
-        self.bridge.status_changed.emit("Connection lost. Reconnecting (10s max)...", False)
+        self.bridge.status_changed.emit("Connection lost. Reconnecting (20s max)...", False)
         if self.auto_reconnect_enabled and self.target_address:
-            self.reconnect_task = asyncio.create_task(self._connect_with_retry(10.0))
+            self.reconnect_task = asyncio.create_task(self._connect_with_retry(20.0))
 
     def _notification_handler(self, sender, data: bytearray):
         flags = data[0]
@@ -162,13 +171,13 @@ class BLEWorker:
             self.bridge.status_changed.emit("Select or enter MAC/UUID first.", False)
             return
 
-        # 1. Force-close any stale/zombie connection handle and let Windows release it
         if self.client is not None:
+            old_client = self.client
+            self.client = None
             try:
-                await self.client.disconnect()
+                await old_client.disconnect()
             except Exception:
                 pass
-            self.client = None
             await asyncio.sleep(1.5)
 
         deadline = time.monotonic() + max_retry_sec
@@ -179,10 +188,10 @@ class BLEWorker:
             attempt += 1
             remaining = max(1, int(deadline - time.monotonic()))
             self.bridge.status_changed.emit(
-                f"Reconnecting to {self.target_address} (try {attempt}, {remaining}s left)...", False
+                f"Connecting (try {attempt}, {remaining}s left)...", False
             )
+            client = None
             try:
-                # 2. Active scan for 4s to confirm the band is awake and advertising
                 found_device = None
                 devices = await BleakScanner.discover(timeout=4.0, scanning_mode="active")
                 for d in devices:
@@ -194,49 +203,52 @@ class BLEWorker:
                     await asyncio.sleep(1.0)
                     continue
 
-                # 3. Connect using target_address string so Windows runs fresh GATT Service Discovery
-                self.client = BleakClient(
-                    self.target_address,
+                client = BleakClient(
+                    found_device,
                     disconnected_callback=self._on_unexpected_disconnect,
                     timeout=8.0
                 )
-                await self.client.connect()
-                await asyncio.sleep(0.5)
+                await client.connect()
 
-                # 4. Read battery percentage if supported
+                if not client.is_connected:
+                    await asyncio.sleep(1.0)
+                    continue
+
+                if not client.services:
+                    await asyncio.sleep(0.8)
+
                 try:
-                    bat_bytes = await self.client.read_gatt_char(BATTERY_LEVEL_CHAR_UUID)
+                    bat_bytes = await client.read_gatt_char(BATTERY_LEVEL_CHAR_UUID)
                     if bat_bytes:
                         self.bridge.battery_received.emit(int(bat_bytes[0]))
                 except Exception:
                     self.bridge.battery_received.emit(-1)
 
-                # 5. Subscribe to HR notifications and confirm packets arrive within 4s
                 packet_event = asyncio.Event()
 
                 def _verified_handler(sender, data: bytearray):
                     packet_event.set()
                     self._notification_handler(sender, data)
 
-                await self.client.start_notify(HR_MEASUREMENT_CHAR_UUID, _verified_handler)
-                self.bridge.status_changed.emit(f"Connected: {self.target_address}", True)
+                await client.start_notify(HR_MEASUREMENT_CHAR_UUID, _verified_handler)
+                self.bridge.status_changed.emit("Waiting for pulse signal...", False)
 
                 try:
-                    await asyncio.wait_for(packet_event.wait(), timeout=4.0)
-                    return  # Confirmed live heart rate packets are flowing
+                    await asyncio.wait_for(packet_event.wait(), timeout=5.0)
+                    self.client = client
+                    self.bridge.status_changed.emit(f"Connected: {self.target_address}", True)
+                    return
                 except asyncio.TimeoutError:
-                    await self.client.disconnect()
-                    self.client = None
+                    await client.disconnect()
                     await asyncio.sleep(1.0)
 
             except Exception as e:
                 print(f"[BLE Reconnect Attempt {attempt} Error]: {e}")
-                if self.client is not None:
+                if client is not None:
                     try:
-                        await self.client.disconnect()
+                        await client.disconnect()
                     except Exception:
                         pass
-                    self.client = None
                 if time.monotonic() + 1.0 < deadline and not self.manual_disconnect:
                     await asyncio.sleep(1.0)
                 else:
@@ -251,7 +263,7 @@ DEFAULT_ZONE_COLORS = {
     "zone2": "#00E676",
     "zone3": "#FFD54F",
     "zone4": "#FF9100",
-    "zone5": "#FF3B30"
+    "zone5": "#E11D48"
 }
 
 DEFAULT_ZONE_THRESHOLDS = {
@@ -265,7 +277,7 @@ DEFAULT_ZONE_THRESHOLDS = {
 class CoospoApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Hartrate Monitor")
+        self.setWindowTitle("BLE Heart Rate Monitor")
         self.resize(1040, 700)
 
         self.config = self.load_config()
@@ -303,7 +315,6 @@ class CoospoApp(QMainWindow):
         self.watchdog_timer.timeout.connect(self.on_watchdog_tick)
         self.watchdog_timer.start(1000)
 
-        # Auto-connect on launch (max 10s) if enabled
         if self.config["auto_connect_launch"] and self.config["device_address"]:
             QTimer.singleShot(500, lambda: self.ble.connect_device(self.config["device_address"], 20.0))
 
@@ -311,15 +322,17 @@ class CoospoApp(QMainWindow):
         defaults = {
             "device_address": "",
             "saved_devices": [],
+            "client_name": "",
             "auto_connect_launch": True,
             "auto_reconnect": True,
-            "server_url": "http://127.0.0.1:8000/api/telemetry",
+            "server_url": "http://127.0.0.1/api/telemetry",
             "server_sync": False,
             "time_display_mode": "actual",
             "timezone_mode": "local",
             "details_window_sec": 300,
-            "accent_color": "#00E676",
-            "bg_color": "#121212",
+            "dark_mode": True,
+            "accent_color": "#E11D48",
+            "bg_color": "#0B1528",
             "use_zone_colors": True,
             "zone_colors": DEFAULT_ZONE_COLORS.copy(),
             "zone_thresholds": DEFAULT_ZONE_THRESHOLDS.copy()
@@ -342,6 +355,7 @@ class CoospoApp(QMainWindow):
 
     def save_config(self):
         self.config["device_address"] = self.input_mac.text().strip()
+        self.config["client_name"] = self.input_client_name.text().strip()
         self.config["auto_connect_launch"] = self.chk_auto_launch.isChecked()
         self.config["auto_reconnect"] = self.chk_auto_reconnect.isChecked()
         self.ble.auto_reconnect_enabled = self.config["auto_reconnect"]
@@ -351,6 +365,7 @@ class CoospoApp(QMainWindow):
         self.config["time_display_mode"] = "actual" if self.chk_actual_time.isChecked() else "relative"
         self.config["timezone_mode"] = "utc" if self.chk_utc_time.isChecked() else "local"
         self.config["details_window_sec"] = self.spin_history_sec.value()
+        self.config["dark_mode"] = self.chk_dark_mode.isChecked()
         self.config["use_zone_colors"] = self.chk_zone_colors.isChecked()
 
         self.config["zone_thresholds"] = {
@@ -373,14 +388,14 @@ class CoospoApp(QMainWindow):
         main_layout.setSpacing(0)
 
         sidebar = QWidget()
-        sidebar.setFixedWidth(205)
+        sidebar.setFixedWidth(210)
         sidebar.setObjectName("Sidebar")
         side_layout = QVBoxLayout(sidebar)
         side_layout.setContentsMargins(14, 24, 14, 24)
         side_layout.setSpacing(10)
 
-        title = QLabel("Hartrate Monitor")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title = QLabel("HR MONITOR")
+        title.setObjectName("SidebarTitle")
         title.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(title)
         side_layout.addSpacing(20)
@@ -397,6 +412,7 @@ class CoospoApp(QMainWindow):
         side_layout.addStretch()
 
         self.lbl_conn_status = QLabel("○ Disconnected")
+        self.lbl_conn_status.setObjectName("SidebarStatus")
         self.lbl_conn_status.setWordWrap(True)
         side_layout.addWidget(self.lbl_conn_status)
 
@@ -434,11 +450,12 @@ class CoospoApp(QMainWindow):
         rec_bar.setContentsMargins(14, 10, 14, 10)
 
         self.btn_record = QPushButton("● Start Recording")
+        self.btn_record.setObjectName("AccentRedBtn")
         self.btn_record.setFixedHeight(36)
         self.btn_record.clicked.connect(self.toggle_recording)
 
         self.lbl_rec_badge = QLabel("IDLE — Ready to record")
-        self.lbl_rec_badge.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.lbl_rec_badge.setFont(QFont("Segoe UI", 10, QFont.Bold))
 
         self.btn_upload_rec = QPushButton("↑ Upload Last Session")
         self.btn_upload_rec.setFixedHeight(36)
@@ -486,7 +503,7 @@ class CoospoApp(QMainWindow):
         self.mini_plot = pg.PlotWidget(title="Live Pulse Trend (Last 60s)", axisItems={"bottom": mini_axis})
         self.mini_plot.setMouseEnabled(x=False, y=False)
         self.mini_plot.hideButtons()
-        self.mini_plot.showGrid(x=False, y=True, alpha=0.15)
+        self.mini_plot.showGrid(x=False, y=True, alpha=0.18)
         self.mini_curve = self.mini_plot.plot()
         layout.addWidget(self.mini_plot)
 
@@ -529,7 +546,7 @@ class CoospoApp(QMainWindow):
         self.detail_rr_plot.showGrid(x=True, y=True, alpha=0.2)
         self.detail_rr_plot.setLabel("left", "Milliseconds")
         self.detail_rr_curve = self.detail_rr_plot.plot(
-            pen=pg.mkPen(color="#FF5252", width=2), symbol="o", symbolSize=5, symbolBrush="#FF5252"
+            pen=pg.mkPen(color="#0052A5", width=2), symbol="o", symbolSize=5, symbolBrush="#0052A5"
         )
         layout.addWidget(self.detail_rr_plot)
 
@@ -577,7 +594,7 @@ class CoospoApp(QMainWindow):
         ble_layout.addRow("Scan Nearby:", scan_row)
 
         self.input_device_name = QLineEdit()
-        self.input_device_name.setPlaceholderText("Friendly Name (e.g., My Coospo H6)")
+        self.input_device_name.setPlaceholderText("Friendly Name (e.g., My Chest Strap)")
         ble_layout.addRow("Band Label:", self.input_device_name)
 
         self.input_mac = QLineEdit(self.config["device_address"])
@@ -587,11 +604,11 @@ class CoospoApp(QMainWindow):
         ble_layout.addRow("MAC / UUID:", self.input_mac)
 
         auto_row = QHBoxLayout()
-        self.chk_auto_launch = QCheckBox("Auto-connect on launch (max 10s)")
+        self.chk_auto_launch = QCheckBox("Auto-connect on launch (max 20s)")
         self.chk_auto_launch.setChecked(self.config["auto_connect_launch"])
         self.chk_auto_launch.toggled.connect(self.save_config)
 
-        self.chk_auto_reconnect = QCheckBox("Auto-reconnect if dropped (max 10s)")
+        self.chk_auto_reconnect = QCheckBox("Auto-reconnect if dropped (max 20s)")
         self.chk_auto_reconnect.setChecked(self.config["auto_reconnect"])
         self.chk_auto_reconnect.toggled.connect(self.save_config)
 
@@ -691,7 +708,6 @@ class CoospoApp(QMainWindow):
             row.addStretch()
             zone_layout.addLayout(row)
 
-        # Zone 5 (anything above Zone 4 Max)
         z5_row = QHBoxLayout()
         lbl_z5 = QLabel("Zone 5 (Max Effort):")
         lbl_z5.setMinimumWidth(165)
@@ -710,11 +726,16 @@ class CoospoApp(QMainWindow):
 
         layout.addWidget(zone_group)
 
-        # 4. Server, Recordings Folder & Base Theme
+        # 4. Server Sync, Client Identity, Recordings Folder & Theme
         srv_group = QGroupBox("Server Sync, Recordings and Theme")
         srv_layout = QFormLayout(srv_group)
         srv_layout.setVerticalSpacing(12)
         srv_layout.setHorizontalSpacing(16)
+
+        self.input_client_name = QLineEdit(self.config["client_name"])
+        self.input_client_name.setPlaceholderText("e.g., Dylan (broadcasted to server & OBS overlay)")
+        self.input_client_name.editingFinished.connect(self.save_config)
+        srv_layout.addRow("Your Name:", self.input_client_name)
 
         self.input_server = QLineEdit(self.config["server_url"])
         self.input_server.editingFinished.connect(self.save_config)
@@ -733,17 +754,19 @@ class CoospoApp(QMainWindow):
         sync_row.addWidget(btn_open_rec)
         srv_layout.addRow("Storage and Sync:", sync_row)
 
+        self.chk_dark_mode = QCheckBox("Dark Mode (Deep Space Navy & Royal Blue)")
+        self.chk_dark_mode.setChecked(self.config["dark_mode"])
+        self.chk_dark_mode.toggled.connect(self.on_dark_mode_toggled)
+        srv_layout.addRow("Display Mode:", self.chk_dark_mode)
+
         vis_btns = QHBoxLayout()
-        btn_accent = QPushButton("Accent Color")
+        btn_accent = QPushButton("Graph / Accent Color")
         btn_accent.clicked.connect(self.pick_accent_color)
-        btn_bg = QPushButton("Background Color")
-        btn_bg.clicked.connect(self.pick_bg_color)
-        btn_reset_colors = QPushButton("Reset All Colors")
+        btn_reset_colors = QPushButton("Reset Default Colors")
         btn_reset_colors.clicked.connect(self.reset_colors)
         vis_btns.addWidget(btn_accent)
-        vis_btns.addWidget(btn_bg)
         vis_btns.addWidget(btn_reset_colors)
-        srv_layout.addRow("Appearance:", vis_btns)
+        srv_layout.addRow("Custom Accents:", vis_btns)
         layout.addWidget(srv_group)
 
         layout.addStretch()
@@ -762,9 +785,9 @@ class CoospoApp(QMainWindow):
     def on_battery_received(self, level: int):
         if level < 0:
             self.lbl_battery.setText("Battery Level: Not connected / Unavailable")
-            self.lbl_battery.setStyleSheet("color: #8E98A4;")
+            self.lbl_battery.setStyleSheet("")
         else:
-            color = "#00E676" if level > 30 else "#FF3B30"
+            color = "#00E676" if level > 30 else "#E11D48"
             self.lbl_battery.setText(f"Battery Level: {level}%")
             self.lbl_battery.setStyleSheet(f"color: {color}; font-weight: bold;")
 
@@ -847,7 +870,7 @@ class CoospoApp(QMainWindow):
     def on_status_change(self, msg: str, connected: bool):
         prefix = "● " if connected else "○ "
         self.lbl_conn_status.setText(prefix + msg)
-        color = self.config["accent_color"] if connected else "#888888"
+        color = "#00E676" if connected else "#93C5FD"
         self.lbl_conn_status.setStyleSheet(f"color: {color}; font-weight: bold;")
     def on_zone_thresholds_changed(self):
         self.lbl_z5_desc.setText(f"Above {self.spin_z4.value()} BPM")
@@ -878,15 +901,13 @@ class CoospoApp(QMainWindow):
         now = time.time()
         elapsed = (now - self.last_packet_time) if self.last_packet_time > 0.0 else 999.0
 
-        # 1. Turn BPM red after 5+ seconds of no data
         if elapsed >= 5.0:
             self.is_signal_stale = True
             self.lbl_big_bpm.setText("-- BPM")
-            self.lbl_big_bpm.setStyleSheet("color: #FF3B30;")
+            self.lbl_big_bpm.setStyleSheet("color: #E11D48; background-color: transparent;")
             self.lbl_zone.setText("ZONE\nSignal Lost (5s+)")
-            self.lbl_zone.setStyleSheet("color: #FF3B30;")
+            self.lbl_zone.setStyleSheet("color: #E11D48;")
 
-        # 2. Force a 10-second reconnect attempt if stale for 10+ seconds
         if (
             self.last_packet_time > 0.0
             and elapsed >= 10.0
@@ -898,12 +919,11 @@ class CoospoApp(QMainWindow):
             self.stale_reconnect_triggered = True
             self.ble.connect_device(self.input_mac.text().strip(), 20.0)
 
-        # 3. Blink recording badge
         if self.is_recording:
             self.blink_state = not self.blink_state
             dot = "🔴" if self.blink_state else "⭕"
             self.lbl_rec_badge.setText(f"{dot} RECORDING ({len(self.recorded_samples)} samples)")
-            self.lbl_rec_badge.setStyleSheet("color: #FF3B30; font-weight: bold;")
+            self.lbl_rec_badge.setStyleSheet("color: #E11D48; font-weight: bold;")
 
     def on_hr_data(self, bpm: int, rr_intervals: list):
         now_ts = time.time()
@@ -914,7 +934,7 @@ class CoospoApp(QMainWindow):
         zone_name, zone_color = self.get_hr_zone_info(bpm)
         active_color = zone_color if self.chk_zone_colors.isChecked() else self.config["accent_color"]
 
-        self.lbl_big_bpm.setStyleSheet(f"color: {active_color};")
+        self.lbl_big_bpm.setStyleSheet(f"color: {active_color}; background-color: transparent;")
         self.lbl_zone.setStyleSheet(f"color: {active_color};" if self.chk_zone_colors.isChecked() else "")
 
         self.bpm_history.append((now_ts, bpm))
@@ -956,13 +976,13 @@ class CoospoApp(QMainWindow):
         if self.chk_sync.isChecked():
             payload = {
                 "timestamp": dt_utc.isoformat(),
-                "device_id": self.input_mac.text().strip() or "coospo-h6",
+                "device_id": self.input_mac.text().strip() or "ble-hr-sensor",
+                "client_name": self.input_client_name.text().strip(),
                 "bpm": bpm,
                 "rr_intervals_ms": rr_intervals
             }
             url = self.input_server.text().strip()
             threading.Thread(target=self._send_to_server, args=(url, payload), daemon=True).start()
-
 
     def refresh_graphs(self):
         if not self.bpm_history:
@@ -1001,25 +1021,24 @@ class CoospoApp(QMainWindow):
             self.recorded_samples = []
             self.record_start_utc = datetime.now(timezone.utc).isoformat()
             self.btn_record.setText("■ Stop & Export Recording")
-            self.btn_record.setStyleSheet("background-color: #FF3B30; color: #FFFFFF; font-weight: bold;")
             self.lbl_rec_badge.setText("🔴 RECORDING (0 samples)")
-            self.lbl_rec_badge.setStyleSheet("color: #FF3B30; font-weight: bold;")
+            self.lbl_rec_badge.setStyleSheet("color: #E11D48; font-weight: bold;")
         else:
             self.is_recording = False
             self.btn_record.setText("● Start Recording")
-            self.btn_record.setStyleSheet("")
             self.export_recording_files()
 
     def export_recording_files(self):
         if not self.recorded_samples:
             self.lbl_rec_badge.setText("IDLE (No samples recorded)")
-            self.lbl_rec_badge.setStyleSheet("color: #888888;")
+            self.lbl_rec_badge.setStyleSheet("")
             return
 
         ended_utc = datetime.now(timezone.utc).isoformat()
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"coospo_session_{stamp}"
-        device_id = self.input_mac.text().strip() or "coospo-h6"
+        base_name = f"hr_session_{stamp}"
+        device_id = self.input_mac.text().strip() or "ble-hr-sensor"
+        client_name = self.input_client_name.text().strip()
 
         csv_path = RECORDINGS_DIR / f"{base_name}.csv"
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -1036,6 +1055,7 @@ class CoospoApp(QMainWindow):
         session_payload = {
             "session_name": base_name,
             "device_id": device_id,
+            "client_name": client_name,
             "started_at_utc": self.record_start_utc,
             "ended_at_utc": ended_utc,
             "samples": self.recorded_samples
@@ -1047,8 +1067,8 @@ class CoospoApp(QMainWindow):
         txt_path = RECORDINGS_DIR / f"{base_name}.txt"
         bpms = [s["bpm"] for s in self.recorded_samples]
         with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(f"Session Report: {base_name}\n")
-            f.write(f"Device: {device_id}\n")
+            f.write(f"Heart Rate Session Report: {base_name}\n")
+            f.write(f"Athlete: {client_name or device_id} ({device_id})\n")
             f.write(f"Start (UTC): {self.record_start_utc}\n")
             f.write(f"End   (UTC): {ended_utc}\n")
             f.write(f"Samples: {len(bpms)} | Min: {min(bpms)} BPM | Avg: {round(sum(bpms)/len(bpms), 1)} BPM | Max: {max(bpms)} BPM\n")
@@ -1071,13 +1091,14 @@ class CoospoApp(QMainWindow):
         self.last_saved_session_payload = session_payload
         self.btn_upload_rec.setEnabled(True)
         self.lbl_rec_badge.setText(f"Saved CSV/JSON/TXT/TCX ({len(bpms)} pts)")
-        self.lbl_rec_badge.setStyleSheet(f"color: {self.config['accent_color']}; font-weight: bold;")
+        self.lbl_rec_badge.setStyleSheet("color: #00E676; font-weight: bold;")
 
         QMessageBox.information(
             self,
             "Recording Exported",
             f"Saved 4 formats (CSV, JSON, TXT, TCX) to:\n{RECORDINGS_DIR}"
         )
+
     def upload_last_recording(self):
         if not self.last_saved_session_payload:
             return
@@ -1114,6 +1135,9 @@ class CoospoApp(QMainWindow):
             requests.post(url, json=payload, timeout=2.0)
         except Exception:
             pass
+    def on_dark_mode_toggled(self, enabled: bool):
+        self.save_config()
+        self.apply_theme()
 
     def pick_zone_color(self, zone_key: str):
         current = self.config["zone_colors"][zone_key]
@@ -1130,53 +1154,87 @@ class CoospoApp(QMainWindow):
             self.save_config()
             self.apply_theme()
 
-    def pick_bg_color(self):
-        color = QColorDialog.getColor(QColor(self.config["bg_color"]), self)
-        if color.isValid():
-            self.config["bg_color"] = color.name()
-            self.save_config()
-            self.apply_theme()
-
     def reset_colors(self):
-        self.config["accent_color"] = "#00E676"
-        self.config["bg_color"] = "#121212"
+        self.config["accent_color"] = "#E11D48"
+        self.config["dark_mode"] = True
+        self.chk_dark_mode.setChecked(True)
         self.config["zone_colors"] = DEFAULT_ZONE_COLORS.copy()
         self.save_config()
         self.apply_theme()
+
     def apply_theme(self):
+        is_dark = self.config.get("dark_mode", True)
         accent = self.config["accent_color"]
-        bg = self.config["bg_color"]
+
+        blue_main = "#1B4F9C"
+        blue_bright = "#0052A5"
+        red_main = "#E11D48"
+        red_deep = "#D92906"
+
+        if is_dark:
+            page_bg = "#0B1528"
+            card_bg = "#131B2E"
+            sub_bg = "#1A243B"
+            text_main = "#F1F5F9"
+            text_muted = "#94A3B8"
+            title_color = "#60A5FA"
+            border_col = "#26334D"
+            btn_bg = "#1A243B"
+            btn_text = "#93C5FD"
+            btn_border = "#2B3B59"
+        else:
+            page_bg = "#F4F6F9"
+            card_bg = "#FFFFFF"
+            sub_bg = "#F4F6F9"
+            text_main = "#0F172A"
+            text_muted = "#526075"
+            title_color = "#1B4F9C"
+            border_col = "#D8E0EA"
+            btn_bg = "#FFFFFF"
+            btn_text = "#1B4F9C"
+            btn_border = "#1B4F9C"
 
         for z_key, btn in self.zone_buttons.items():
             z_col = self.config["zone_colors"][z_key]
             btn.setStyleSheet(f"border: 2px solid {z_col}; color: {z_col}; font-weight: bold;")
 
-        fill_color = QColor(accent)
+        # Red heart rate graph line & soft red area fill
+        hr_graph_red = "#E11D48"
+        fill_color = QColor(hr_graph_red)
         fill_color.setAlpha(45)
         fill_brush = pg.mkBrush(fill_color)
 
-        self.mini_plot.setBackground(bg)
-        self.detail_hr_plot.setBackground(bg)
-        self.detail_rr_plot.setBackground(bg)
+        self.mini_plot.setBackground(card_bg)
+        self.detail_hr_plot.setBackground(card_bg)
+        self.detail_rr_plot.setBackground(card_bg)
 
-        self.mini_curve.setPen(pg.mkPen(color=accent, width=3))
+        self.mini_curve.setPen(pg.mkPen(color=hr_graph_red, width=3))
         self.mini_curve.setFillLevel(0)
         self.mini_curve.setBrush(fill_brush)
 
-        self.detail_hr_curve.setPen(pg.mkPen(color=accent, width=2.5))
+        self.detail_hr_curve.setPen(pg.mkPen(color=hr_graph_red, width=2.5))
         self.detail_hr_curve.setFillLevel(0)
         self.detail_hr_curve.setBrush(fill_brush)
 
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{
-                background-color: {bg};
-                color: #F2F4F8;
+                background-color: {page_bg};
+                color: {text_main};
                 font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
                 font-size: 13px;
             }}
             #Sidebar {{
-                background-color: rgba(255, 255, 255, 0.03);
-                border-right: 1px solid rgba(255, 255, 255, 0.08);
+                background-color: #0F172A;
+                border-right: 3px solid {blue_main};
+            }}
+            #SidebarTitle {{
+                background-color: {blue_main};
+                color: #FFFFFF;
+                font-size: 15pt;
+                font-weight: 800;
+                padding: 12px 8px;
+                border-radius: 8px;
+                border-bottom: 3px solid {red_main};
             }}
             #Sidebar QPushButton {{
                 background-color: transparent;
@@ -1184,77 +1242,99 @@ class CoospoApp(QMainWindow):
                 border-radius: 8px;
                 padding: 10px 14px;
                 text-align: left;
-                color: #A0AAB5;
+                color: #CBD5E1;
                 font-size: 14px;
+                font-weight: 600;
             }}
             #Sidebar QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.06);
+                background-color: rgba(27, 79, 156, 0.35);
                 color: #FFFFFF;
             }}
             #Sidebar QPushButton[active="true"] {{
-                background-color: rgba(255, 255, 255, 0.10);
-                color: {accent};
-                border-left: 3px solid {accent};
+                background-color: {blue_main};
+                color: #FFFFFF;
+                border-left: 4px solid {red_main};
+                font-weight: bold;
+            }}
+            #SidebarStatus {{
+                background-color: transparent;
+                color: #93C5FD;
+                font-size: 12px;
             }}
             #PageTitle {{
-                font-size: 24pt;
-                font-weight: bold;
-                color: #FFFFFF;
+                font-size: 22pt;
+                font-weight: 800;
+                color: {title_color};
             }}
             #BigBpmLabel {{
                 font-size: 72pt;
-                font-weight: bold;
+                font-weight: 800;
                 padding: 6px 0px;
+                background-color: transparent;
             }}
             #MutedText {{
-                color: #8E98A4;
+                color: {text_muted};
                 font-family: Consolas, monospace;
+                background-color: transparent;
             }}
             #StatPill {{
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                background-color: {sub_bg};
+                border: 1.5px solid {border_col};
                 border-radius: 10px;
                 font-size: 13px;
                 font-weight: bold;
-                color: #E0E6ED;
+                color: {text_main};
                 padding: 6px;
             }}
             QPushButton {{
-                background-color: rgba(255, 255, 255, 0.07);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 8px;
+                background-color: {btn_bg};
+                border: 1.5px solid {btn_border};
+                border-radius: 7px;
                 padding: 7px 14px;
-                color: #FFFFFF;
-                font-weight: 600;
+                color: {btn_text};
+                font-weight: 700;
             }}
             QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.12);
-                border: 1px solid {accent};
+                background-color: {blue_main};
+                color: #FFFFFF;
+                border-color: {blue_main};
             }}
             QPushButton:disabled {{
-                color: #555E68;
-                border-color: rgba(255, 255, 255, 0.04);
+                color: {text_muted};
+                border-color: {border_col};
             }}
             QPushButton#PrimaryBtn {{
-                background-color: {accent};
-                color: #0D1117;
+                background-color: {blue_main};
+                color: #FFFFFF;
                 border: none;
                 font-weight: bold;
             }}
+            QPushButton#PrimaryBtn:hover {{
+                background-color: {blue_bright};
+            }}
+            QPushButton#AccentRedBtn {{
+                background-color: {red_main};
+                color: #FFFFFF;
+                border: none;
+                font-weight: bold;
+            }}
+            QPushButton#AccentRedBtn:hover {{
+                background-color: {red_deep};
+            }}
             QLineEdit, QComboBox, QSpinBox {{
-                background-color: rgba(0, 0, 0, 0.35);
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                background-color: {sub_bg};
+                border: 1.5px solid {border_col};
                 border-radius: 7px;
                 padding: 7px 10px;
-                color: #FFFFFF;
+                color: {text_main};
             }}
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
-                border: 1px solid {accent};
+                border: 1.5px solid {blue_main};
             }}
             QGroupBox {{
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
+                background-color: {card_bg};
+                border: 2px solid {blue_main};
+                border-radius: 10px;
                 margin-top: 18px;
                 padding: 22px 16px 16px 16px;
                 font-weight: bold;
@@ -1265,13 +1345,20 @@ class CoospoApp(QMainWindow):
                 left: 14px;
                 top: 4px;
                 padding: 0 8px;
-                color: {accent};
+                color: {title_color};
+            }}
+            QCheckBox {{
+                background-color: transparent;
+                spacing: 8px;
+            }}
+            QLabel {{
+                background-color: transparent;
             }}
         """)
         if self.is_signal_stale:
-            self.lbl_big_bpm.setStyleSheet("color: #FF3B30;")
+            self.lbl_big_bpm.setStyleSheet("color: #E11D48; background-color: transparent;")
         else:
-            self.lbl_big_bpm.setStyleSheet(f"color: {accent};")
+            self.lbl_big_bpm.setStyleSheet(f"color: {accent}; background-color: transparent;")
 
 
 if __name__ == "__main__":
