@@ -265,7 +265,7 @@ DEFAULT_ZONE_THRESHOLDS = {
 class CoospoApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Coospo H6 Monitor")
+        self.setWindowTitle("Hartrate Monitor")
         self.resize(1040, 700)
 
         self.config = self.load_config()
@@ -379,7 +379,7 @@ class CoospoApp(QMainWindow):
         side_layout.setContentsMargins(14, 24, 14, 24)
         side_layout.setSpacing(10)
 
-        title = QLabel("COOSPO H6")
+        title = QLabel("Hartrate Monitor")
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(title)
@@ -1047,7 +1047,7 @@ class CoospoApp(QMainWindow):
         txt_path = RECORDINGS_DIR / f"{base_name}.txt"
         bpms = [s["bpm"] for s in self.recorded_samples]
         with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(f"Coospo H6 Session Report: {base_name}\n")
+            f.write(f"Session Report: {base_name}\n")
             f.write(f"Device: {device_id}\n")
             f.write(f"Start (UTC): {self.record_start_utc}\n")
             f.write(f"End   (UTC): {ended_utc}\n")

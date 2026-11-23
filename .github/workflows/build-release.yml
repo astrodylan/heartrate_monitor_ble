@@ -15,21 +15,21 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: CoospoH6Monitor-Windows.exe
-            build_cmd: pyinstaller --noconfirm --onefile --windowed --name "CoospoH6Monitor" --collect-all bleak client.py
-            dist_path: client/dist/CoospoH6Monitor.exe
+            artifact_name: HartRateMonitor-Windows.exe
+            build_cmd: pyinstaller --noconfirm --onefile --windowed --name "HartRateMonitor" --collect-all bleak client.py
+            dist_path: client/dist/HartRateMonitor.exe
 
           - os: ubuntu-latest
-            artifact_name: CoospoH6Monitor-Linux
-            build_cmd: pyinstaller --noconfirm --onefile --name "CoospoH6Monitor" --collect-all bleak client.py
-            dist_path: client/dist/CoospoH6Monitor
+            artifact_name: HartRateMonitor-Linux
+            build_cmd: pyinstaller --noconfirm --onefile --name "HartRateMonitor" --collect-all bleak client.py
+            dist_path: client/dist/HartRateMonitor
 
           - os: macos-latest
-            artifact_name: CoospoH6Monitor-macOS.zip
+            artifact_name: HartRateMonitor-macOS.zip
             build_cmd: |
-              pyinstaller --noconfirm --windowed --name "CoospoH6Monitor" --collect-all bleak --osx-bundle-identifier "com.coospo.h6monitor" client.py
-              cd dist && zip -r CoospoH6Monitor-macOS.zip CoospoH6Monitor.app
-            dist_path: client/dist/CoospoH6Monitor-macOS.zip
+              pyinstaller --noconfirm --windowed --name "HartRateMonitor" --collect-all bleak --osx-bundle-identifier "com.coospo.h6monitor" client.py
+              cd dist && zip -r HartRateMonitor-macOS.zip HartRateMonitor.app
+            dist_path: client/dist/HartRateMonitor-macOS.zip
 
     runs-on: ${{ matrix.os }}
 
