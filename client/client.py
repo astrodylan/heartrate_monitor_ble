@@ -313,7 +313,7 @@ class CoospoApp(QMainWindow):
             "saved_devices": [],
             "auto_connect_launch": True,
             "auto_reconnect": True,
-            "server_url": "http://127.0.0",
+            "server_url": "http://127.0.0.1:8000/api/telemetry",
             "server_sync": False,
             "time_display_mode": "actual",
             "timezone_mode": "local",
