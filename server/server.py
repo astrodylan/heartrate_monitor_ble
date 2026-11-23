@@ -252,23 +252,45 @@ async def dashboard():
             --red-deep: #D92906;
             --navy-dark: #0B1528;
             --navy-slate: #0F172A;
-            --white: #FFFFFF;
-            --light-gray: #F4F6F9;
-            --border: #D8E0EA;
-            --muted: #526075;
+
+            --page-bg: #F4F6F9;
+            --surface-bg: #FFFFFF;
+            --sub-surface: #F4F6F9;
+            --text-main: #0F172A;
+            --text-muted: #526075;
+            --section-color: #1B4F9C;
+            --border-color: #D8E0EA;
+            --card-border: #1B4F9C;
+            --btn-bg: #FFFFFF;
+            --btn-text: #1B4F9C;
+            --btn-border: #1B4F9C;
+        }
+        body.dark-mode {
+            --page-bg: #0B1528;
+            --surface-bg: #131B2E;
+            --sub-surface: #1A243B;
+            --text-main: #F1F5F9;
+            --text-muted: #94A3B8;
+            --section-color: #60A5FA;
+            --border-color: #26334D;
+            --card-border: #1B4F9C;
+            --btn-bg: #1A243B;
+            --btn-text: #93C5FD;
+            --btn-border: #2B3B59;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            background-color: var(--light-gray);
-            color: var(--navy-slate);
+            background-color: var(--page-bg);
+            color: var(--text-main);
             font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+            transition: background-color 0.2s, color 0.2s;
         }
         .header {
             background: linear-gradient(110deg, var(--blue-main) 0%, var(--blue-bright) 72%, var(--red-deep) 100%);
-            color: var(--white);
+            color: #FFFFFF;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -276,7 +298,7 @@ async def dashboard():
             border-bottom: 4px solid var(--red-main);
             gap: 12px;
             flex-wrap: wrap;
-            box-shadow: 0 4px 14px rgba(11, 21, 40, 0.2);
+            box-shadow: 0 4px 14px rgba(11, 21, 40, 0.25);
         }
         .header h1 { font-size: 22px; font-weight: 800; letter-spacing: 0.3px; }
         .header .sub { color: rgba(255, 255, 255, 0.88); font-size: 13px; margin-top: 3px; }
@@ -289,9 +311,9 @@ async def dashboard():
             margin: 0 auto;
         }
         button {
-            background: var(--white);
-            color: var(--blue-main);
-            border: 1.5px solid var(--blue-main);
+            background: var(--btn-bg);
+            color: var(--btn-text);
+            border: 1.5px solid var(--btn-border);
             border-radius: 7px;
             padding: 8px 15px;
             font-size: 13px;
@@ -301,70 +323,78 @@ async def dashboard():
         }
         button:hover {
             background: var(--blue-main);
-            color: var(--white);
+            color: #FFFFFF;
+            border-color: var(--blue-main);
         }
         .header button {
             background: var(--red-main);
-            color: var(--white);
+            color: #FFFFFF;
             border: 1.5px solid rgba(255, 255, 255, 0.35);
         }
-        .header button:hover {
-            background: var(--red-deep);
-            border-color: var(--white);
-        }
-        button.primary {
-            background: var(--blue-main);
-            color: var(--white);
-            border: none;
-        }
-        button.primary:hover {
-            background: var(--blue-bright);
-        }
+        .header button:hover { background: var(--red-deep); border-color: #FFFFFF; }
+        button.primary { background: var(--blue-main); color: #FFFFFF; border: none; }
+        button.primary:hover { background: var(--blue-bright); }
         button.danger {
             background: var(--red-main);
-            color: var(--white);
+            color: #FFFFFF;
             border: none;
             padding: 4px 10px;
             font-size: 12px;
         }
-        button.danger:hover {
-            background: var(--red-deep);
-        }
+        button.danger:hover { background: var(--red-deep); }
         .settings-panel {
             display: none;
-            background: var(--white);
+            background: var(--surface-bg);
             border: 2px solid var(--blue-main);
             border-radius: 10px;
             padding: 20px 24px;
             margin-bottom: 28px;
-            box-shadow: 0 6px 18px rgba(11, 21, 40, 0.08);
+            box-shadow: 0 6px 18px rgba(11, 21, 40, 0.15);
         }
         .settings-panel.open { display: block; }
-        .settings-panel h2 { color: var(--blue-main); font-size: 17px; margin-bottom: 4px; }
-        .settings-panel .sub { color: var(--muted); font-size: 13px; }
-        .settings-form {
+        .settings-top {
             display: flex;
-            gap: 10px;
+            justify-content: space-between;
+            align-items: center;
             flex-wrap: wrap;
-            margin: 14px 0 16px 0;
+            gap: 12px;
+            margin-bottom: 6px;
         }
-        input {
-            background: var(--light-gray);
-            border: 1.5px solid var(--border);
+        .settings-panel h2 { color: var(--section-color); font-size: 17px; }
+        .settings-panel .sub { color: var(--text-muted); font-size: 13px; }
+        .theme-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--sub-surface);
+            border: 1px solid var(--border-color);
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .theme-toggle input[type="checkbox"] {
+            min-width: auto;
+            width: 16px;
+            height: 16px;
+            accent-color: var(--blue-main);
+            cursor: pointer;
+        }
+        .settings-form { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 16px 0; }
+        input[type="text"] {
+            background: var(--sub-surface);
+            border: 1.5px solid var(--border-color);
             border-radius: 7px;
             padding: 8px 12px;
-            color: var(--navy-slate);
+            color: var(--text-main);
             font-size: 13px;
             min-width: 240px;
         }
-        input:focus {
-            outline: none;
-            border-color: var(--blue-main);
-            background: var(--white);
-        }
+        input[type="text"]:focus { outline: none; border-color: var(--blue-main); background: var(--surface-bg); }
         .alias-list { display: flex; flex-wrap: wrap; gap: 8px; }
         .alias-chip {
-            background: var(--light-gray);
+            background: var(--sub-surface);
             border: 1.5px solid var(--blue-main);
             border-radius: 7px;
             padding: 6px 12px;
@@ -378,7 +408,7 @@ async def dashboard():
             font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0.6px;
-            color: var(--blue-main);
+            color: var(--section-color);
             margin-bottom: 16px;
             padding: 6px 0 6px 12px;
             border-left: 5px solid var(--red-main);
@@ -390,28 +420,24 @@ async def dashboard():
             margin-bottom: 36px;
         }
         .card {
-            background: var(--white);
-            border: 1.5px solid var(--border);
+            background: var(--surface-bg);
+            border: 1.5px solid var(--border-color);
             border-radius: 10px;
             overflow: hidden;
-            box-shadow: 0 4px 12px rgba(11, 21, 40, 0.06);
+            box-shadow: 0 4px 12px rgba(11, 21, 40, 0.12);
         }
-        .card.online {
-            border: 2px solid var(--blue-main);
-        }
+        .card.online { border: 2px solid var(--card-border); }
         .card-top {
             background: var(--navy-slate);
-            color: var(--white);
+            color: #FFFFFF;
             padding: 14px 18px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             gap: 10px;
         }
-        .card.online .card-top {
-            background: linear-gradient(90deg, var(--blue-main) 0%, var(--blue-bright) 100%);
-        }
-        .dev-title { font-weight: 800; font-size: 16px; color: var(--white); }
+        .card.online .card-top { background: linear-gradient(90deg, var(--blue-main) 0%, var(--blue-bright) 100%); }
+        .dev-title { font-weight: 800; font-size: 16px; color: #FFFFFF; }
         .dev-sub { font-size: 11px; color: rgba(255, 255, 255, 0.8); font-family: Consolas, monospace; margin-top: 2px; }
         .badge {
             font-size: 11px;
@@ -422,65 +448,45 @@ async def dashboard():
             letter-spacing: 0.4px;
             white-space: nowrap;
         }
-        .badge.live {
-            background: var(--red-main);
-            color: var(--white);
-            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
-        }
-        .badge.offline {
-            background: rgba(255, 255, 255, 0.15);
-            color: var(--white);
-        }
-        .bpm {
-            font-size: 50px;
-            font-weight: 800;
-            color: var(--red-main);
-            line-height: 1.1;
-            padding: 18px 20px 8px 20px;
-        }
-        .card:not(.online) .bpm { color: var(--muted); }
+        .badge.live { background: var(--red-main); color: #FFFFFF; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25); }
+        .badge.offline { background: rgba(255, 255, 255, 0.15); color: #FFFFFF; }
+        .bpm { font-size: 50px; font-weight: 800; color: var(--red-main); line-height: 1.1; padding: 18px 20px 8px 20px; }
+        .card:not(.online) .bpm { color: var(--text-muted); }
         .meta {
-            color: var(--navy-slate);
+            color: var(--text-muted);
             font-size: 13px;
             line-height: 1.7;
             padding: 12px 20px;
-            background: var(--light-gray);
-            border-top: 1px solid var(--border);
+            background: var(--sub-surface);
+            border-top: 1px solid var(--border-color);
         }
-        .card > div:last-child {
-            padding: 12px 20px 16px 20px;
-        }
+        .card > div:last-child { padding: 12px 20px 16px 20px; }
         table {
             width: 100%;
             border-collapse: collapse;
-            background: var(--white);
-            border: 2px solid var(--blue-main);
+            background: var(--surface-bg);
+            border: 2px solid var(--card-border);
             border-radius: 10px;
             overflow: hidden;
-            box-shadow: 0 4px 12px rgba(11, 21, 40, 0.06);
+            box-shadow: 0 4px 12px rgba(11, 21, 40, 0.12);
         }
-        th, td {
-            padding: 13px 16px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-            font-size: 13px;
-        }
+        th, td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 13px; }
         th {
             background: var(--blue-main);
-            color: var(--white);
+            color: #FFFFFF;
             font-weight: 700;
             font-size: 12px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             border-bottom: 3px solid var(--red-main);
         }
-        tr:nth-child(even) td { background: var(--light-gray); }
+        tr:nth-child(even) td { background: var(--sub-surface); }
         .empty {
-            color: var(--muted);
+            color: var(--text-muted);
             padding: 24px;
             text-align: center;
-            background: var(--white);
-            border: 1.5px solid var(--border);
+            background: var(--surface-bg);
+            border: 1.5px solid var(--border-color);
             border-radius: 8px;
         }
         .footer {
@@ -494,7 +500,6 @@ async def dashboard():
         }
     </style>
 </head>
-
 <body>
     <div class="header">
         <div>
@@ -509,8 +514,16 @@ async def dashboard():
 
     <div class="main-wrap">
         <div class="settings-panel" id="settings-panel">
-            <h2>Map Device ID / MAC to Friendly Name</h2>
-            <div class="sub">Assign a person's name or label to any sensor ID so it appears across live cards and recorded sessions.</div>
+            <div class="settings-top">
+                <div>
+                    <h2>Dashboard Settings & Device Names</h2>
+                    <div class="sub">Assign friendly names to sensor IDs or switch between Light and Dark theme.</div>
+                </div>
+                <label class="theme-toggle">
+                    <input type="checkbox" id="dark-mode-toggle" onchange="toggleDarkMode(this.checked)">
+                    <span>🌙 Dark Mode</span>
+                </label>
+            </div>
             <div class="settings-form">
                 <input type="text" id="alias-id" placeholder="Device ID / MAC (e.g. DA:F6:45:C6:6C:11)">
                 <input type="text" id="alias-name" placeholder="Friendly Name (e.g. John - Chest Strap)">
@@ -544,6 +557,20 @@ async def dashboard():
 
     <div class="footer">BLE Heart Rate Collector Server</div>
     <script>
+        function applyStoredTheme() {
+            const isDark = localStorage.getItem('ble_dashboard_dark') === 'true';
+            document.body.classList.toggle('dark-mode', isDark);
+            const chk = document.getElementById('dark-mode-toggle');
+            if (chk) chk.checked = isDark;
+        }
+
+        function toggleDarkMode(enabled) {
+            document.body.classList.toggle('dark-mode', enabled);
+            localStorage.setItem('ble_dashboard_dark', enabled ? 'true' : 'false');
+        }
+
+        applyStoredTheme();
+
         function toggleSettings() {
             document.getElementById('settings-panel').classList.toggle('open');
         }
@@ -573,7 +600,6 @@ async def dashboard():
             }
             refreshDashboard();
         }
-
         async function refreshDashboard() {
             try {
                 const res = await fetch('/api/devices');
@@ -590,7 +616,7 @@ async def dashboard():
                 } else {
                     aliasList.innerHTML = entries.map(([id, name]) => `
                         <div class="alias-chip">
-                            <span><strong>${name}</strong> <span class="dev-sub">(${id})</span></span>
+                            <span><strong>${name}</strong> <span style="opacity:0.7;font-family:Consolas,monospace;font-size:12px;">(${id})</span></span>
                             <button class="danger" onclick="saveAlias('${id}', '')">Remove</button>
                         </div>
                     `).join('');
@@ -620,7 +646,7 @@ async def dashboard():
                                 Latest R-R: ${d.rr_intervals.length ? d.rr_intervals.join(', ') + ' ms' : 'None'}<br>
                                 Total Packets: ${d.total_packets}
                             </div>
-                            <div style="margin-top:12px;">
+                            <div style="margin-top:4px;">
                                 <button onclick="prefillAlias('${d.device_id}', '${d.friendly_name.replace(/'/g, "\\'")}')">✏️ Rename</button>
                             </div>
                         </div>
@@ -633,7 +659,7 @@ async def dashboard():
                 } else {
                     tbody.innerHTML = data.sessions.map(s => {
                         const who = s.friendly_name
-                            ? `<strong>${s.friendly_name}</strong><br><span class="dev-sub">${s.device_id}</span>`
+                            ? `<strong>${s.friendly_name}</strong><br><span style="opacity:0.7;font-family:Consolas,monospace;font-size:12px;">${s.device_id}</span>`
                             : s.device_id;
                         return `
                         <tr>
@@ -653,6 +679,151 @@ async def dashboard():
 
         refreshDashboard();
         setInterval(refreshDashboard, 1000);
+    </script>
+</body>
+</html>
+"""
+@app.get("/overlay", response_class=HTMLResponse)
+async def obs_overlay():
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OBS Heart Rate Overlay</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            background: transparent !important;
+            overflow: hidden;
+            font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+            padding: 16px;
+        }
+        #overlay-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 320px;
+        }
+        /* Horizontal layout option via ?layout=row in URL */
+        body.row-layout #overlay-container {
+            flex-direction: row;
+            flex-wrap: wrap;
+            width: auto;
+        }
+        .hr-pill {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: linear-gradient(100deg, rgba(11, 21, 40, 0.92) 0%, rgba(27, 79, 156, 0.92) 100%);
+            border-left: 5px solid #E11D48;
+            border-radius: 10px;
+            padding: 10px 16px;
+            color: #FFFFFF;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+            min-width: 260px;
+            transition: transform 0.2s ease, opacity 0.3s ease;
+        }
+        .left-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            overflow: hidden;
+        }
+        .athlete-name {
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 155px;
+        }
+        .sub-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #93C5FD;
+            letter-spacing: 0.6px;
+        }
+        .right-bpm {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+        .heart-icon {
+            color: #E11D48;
+            font-size: 20px;
+            display: inline-block;
+            animation: pulse var(--beat-duration, 0.8s) infinite ease-in-out;
+        }
+        .bpm-num {
+            font-size: 34px;
+            font-weight: 900;
+            line-height: 1;
+            color: #FFFFFF;
+            font-variant-numeric: tabular-nums;
+        }
+        .bpm-unit {
+            font-size: 12px;
+            font-weight: 800;
+            color: #FDA4AF;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            25% { transform: scale(1.28); }
+            50% { transform: scale(1.05); }
+        }
+    </style>
+</head>
+<body>
+    <div id="overlay-container"></div>
+    <script>
+        // Support ?layout=row in OBS URL for horizontal bottom-bar overlays
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('layout') === 'row') {
+            document.body.classList.add('row-layout');
+        }
+
+        async function updateOverlay() {
+            try {
+                const res = await fetch('/api/devices');
+                const data = await res.json();
+
+                // Filter strictly for actively broadcasting devices (is_online === true)
+                const active = (data.devices || []).filter(d => d.is_online);
+                const container = document.getElementById('overlay-container');
+
+                if (active.length === 0) {
+                    container.innerHTML = '';
+                    return;
+                }
+
+                container.innerHTML = active.map(d => {
+                    const label = d.friendly_name ? d.friendly_name : d.device_id;
+                    // Match heart icon animation speed to actual BPM
+                    const beatSec = d.bpm > 0 ? (60 / d.bpm).toFixed(2) : '0.80';
+                    return `
+                        <div class="hr-pill">
+                            <div class="left-info">
+                                <div class="athlete-name">${label}</div>
+                                <div class="sub-label">LIVE HR</div>
+                            </div>
+                            <div class="right-bpm">
+                                <span class="heart-icon" style="--beat-duration: ${beatSec}s;">♥</span>
+                                <span class="bpm-num">${d.bpm}</span>
+                                <span class="bpm-unit">BPM</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                // Keep last state silently on brief network hiccup
+            }
+        }
+
+        updateOverlay();
+        setInterval(updateOverlay, 1000);
     </script>
 </body>
 </html>
