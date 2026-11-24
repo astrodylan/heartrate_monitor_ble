@@ -5,6 +5,7 @@ import json
 import time
 import asyncio
 import threading
+import queue
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import deque
@@ -24,7 +25,7 @@ from bleak import BleakClient, BleakScanner
 HR_MEASUREMENT_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 BATTERY_LEVEL_CHAR_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
-APP_DIR = Path.home() / ".coospo_h6_monitor"
+APP_DIR = Path.home() / ".heart_rate_monitor"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = str(APP_DIR / "config.json")
 RECORDINGS_DIR = APP_DIR / "recordings"
@@ -69,194 +70,410 @@ class DataBridge(QObject):
     status_changed = Signal(str, bool)
     scan_finished = Signal(list)
 class BLEWorker:
+    """Owns all BLE operations on one asyncio loop/thread."""
+    HEART_RATE_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
+
     def __init__(self, bridge: DataBridge):
         self.bridge = bridge
         self.loop = asyncio.new_event_loop()
         self.client = None
         self.target_address = ""
+        self.discovered_devices = {}
+        self.discovered_at = {}
         self.manual_disconnect = False
         self.auto_reconnect_enabled = True
         self.reconnect_task = None
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.battery_task = None
+        self.connection_state = "disconnected"
+        self._scan_lock = None  # created on the BLE event loop
+        self.thread = threading.Thread(target=self._run_loop, name="BLE-Event-Loop", daemon=True)
         self.thread.start()
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
+        self._scan_lock = asyncio.Lock()
         self.loop.run_forever()
 
+    def _set_state(self, state: str, message: str, connected: bool = False):
+        """Single point for connection-state transitions and UI updates."""
+        self.connection_state = state
+        self.bridge.status_changed.emit(message, connected)
+
     def scan_devices(self):
+        if self.connection_state in ("scanning", "connecting", "reconnecting"):
+            return
         asyncio.run_coroutine_threadsafe(self._scan(), self.loop)
 
     async def _scan(self):
-        self.bridge.status_changed.emit("Scanning for HR monitors...", False)
-        try:
-            devices = await BleakScanner.discover(timeout=6.0, return_adv=True, scanning_mode="active")
-            found = []
-            seen_addrs = set()
+        if self._scan_lock is None:
+            self._scan_lock = asyncio.Lock()
+        if self.connection_state in ("connecting", "reconnecting"):
+            return
+        async with self._scan_lock:
+            previous_state = self.connection_state
+            self._set_state("scanning", "Scanning nearby Bluetooth devices...", bool(self.client and self.client.is_connected))
+            try:
+                # A longer active scan improves discovery of advertising bands.
+                # One deliberate 10-second active scan gives low-duty-cycle
+                # heart-rate straps time to advertise without rapid rescanning.
+                devices = await BleakScanner.discover(
+                    timeout=10.0, return_adv=True, scanning_mode="active"
+                )
+                found = []
+                seen = set()
+                # Keep older sightings as fallback handles, but timestamp every
+                # device seen in this scan so stale entries can be rejected.
 
-            # Include currently connected band first (BLE stops advertising while connected)
-            if self.client and self.client.is_connected and self.target_address:
-                found.append(("❤️ Connected Band", self.target_address))
-                seen_addrs.add(self.target_address.lower())
+                if self.client and self.client.is_connected and self.target_address:
+                    found.append(("❤️ Connected Band", self.target_address))
+                    seen.add(self.target_address.lower())
 
-            for d, adv in devices.values():
-                if d.address.lower() in seen_addrs:
-                    continue
-                name = d.name or adv.local_name or "Unknown Device"
-                uuids = [u.lower() for u in (adv.service_uuids or [])]
-                if "0000180d-0000-1000-8000-00805f9b34fb" in uuids or "h6" in name.lower() or "coospo" in name.lower():
-                    found.insert(0, (f"❤️ {name}", d.address))
-                else:
-                    found.append((name, d.address))
+                ranked = []
+                for device, advertisement in devices.values():
+                    address = device.address
+                    normalized = address.lower()
+                    self.discovered_devices[normalized] = device
+                    self.discovered_at[normalized] = time.monotonic()
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
 
-            self.bridge.scan_finished.emit(found)
-            self.bridge.status_changed.emit(f"Found {len(found)} devices.", self.client.is_connected if self.client else False)
-        except Exception as e:
-            self.bridge.status_changed.emit(f"Scan error: {e}", False)
+                    name = device.name or advertisement.local_name
+                    # Some straps intentionally omit their advertised name.
+                    # Keep them selectable and distinguish them by platform ID.
+                    if not name:
+                        suffix = str(address)[-5:]
+                        name = f"Unnamed BLE device ({suffix})"
+                    service_uuids = [u.lower() for u in (advertisement.service_uuids or [])]
+                    has_hr_service = self.HEART_RATE_SERVICE_UUID in service_uuids
+                    name_hint = any(token in name.lower() for token in ("heart", "hr", "h6", "coospo", "polar", "garmin", "wahoo"))
+                    label = f"❤️ {name}" if has_hr_service or name_hint else name
+                    # Heart-rate service advertisements are shown first, but other
+                    # devices remain selectable for bands that omit service UUIDs.
+                    ranked.append((0 if has_hr_service else 1 if name_hint else 2, label, address))
 
-    def connect_device(self, address: str, max_retry_sec: float = 20.0):
+                ranked.sort(key=lambda item: (item[0], item[1].lower()))
+                found.extend((label, address) for _, label, address in ranked)
+                self.bridge.scan_finished.emit(found)
+                connected = bool(self.client and self.client.is_connected)
+                self._set_state(
+                    "connected" if connected else "disconnected",
+                    f"Found {len(found)} Bluetooth device(s). Select your band to connect.",
+                    connected
+                )
+            except Exception as exc:
+                connected = bool(self.client and self.client.is_connected)
+                self._set_state(
+                    "connected" if connected else "disconnected",
+                    f"Bluetooth scan failed: {exc}",
+                    connected
+                )
+
+    def connect_device(self, address: str, max_retry_sec: float = 30.0):
+        address = (address or "").strip()
+        if not address:
+            self._set_state("disconnected", "Enter or select the band's Bluetooth address first.", False)
+            return
         self.target_address = address
         self.manual_disconnect = False
-        asyncio.run_coroutine_threadsafe(self._connect_with_retry(max_retry_sec), self.loop)
+
+        def schedule():
+            if self.reconnect_task and not self.reconnect_task.done():
+                self.reconnect_task.cancel()
+            self.reconnect_task = asyncio.create_task(self._connect_with_retry(max_retry_sec))
+
+        self.loop.call_soon_threadsafe(schedule)
 
     def disconnect_device(self):
         self.manual_disconnect = True
-        asyncio.run_coroutine_threadsafe(self._disconnect(), self.loop)
+
+        def schedule():
+            if self.reconnect_task and not self.reconnect_task.done():
+                self.reconnect_task.cancel()
+            asyncio.create_task(self._disconnect())
+
+        self.loop.call_soon_threadsafe(schedule)
+
+    async def _stop_battery_poll(self):
+        task = self.battery_task
+        self.battery_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def _disconnect(self):
-        if self.reconnect_task and not self.reconnect_task.done():
-            self.reconnect_task.cancel()
-        if self.client and self.client.is_connected:
-            await self.client.disconnect()
+        await self._stop_battery_poll()
+        old_client = self.client
+        self.client = None
+        if old_client is not None:
+            try:
+                if old_client.is_connected:
+                    await old_client.disconnect()
+            except Exception as exc:
+                print(f"[BLE Disconnect Error]: {exc!r}")
         self.bridge.battery_received.emit(-1)
-        self.bridge.status_changed.emit("Disconnected", False)
+        self._set_state("disconnected", "Disconnected", False)
 
     def _on_unexpected_disconnect(self, client):
+        # Bleak invokes this on the BLE event loop.
+        if self.client is client:
+            self.client = None
+        if self.battery_task and not self.battery_task.done():
+            self.battery_task.cancel()
         self.bridge.battery_received.emit(-1)
+
         if self.manual_disconnect:
-            self.bridge.status_changed.emit("Disconnected", False)
+            self._set_state("disconnected", "Disconnected", False)
             return
-        self.bridge.status_changed.emit("Connection lost. Reconnecting (20s max)...", False)
+
+        self._set_state("reconnecting", "Connection lost. Searching for the band...", False)
         if self.auto_reconnect_enabled and self.target_address:
-            self.reconnect_task = asyncio.create_task(self._connect_with_retry(20.0))
+            if self.reconnect_task and not self.reconnect_task.done():
+                self.reconnect_task.cancel()
+            self.reconnect_task = asyncio.create_task(self._connect_with_retry(30.0))
 
     def _notification_handler(self, sender, data: bytearray):
+        # BLE Heart Rate Measurement: flags + 8/16-bit BPM + optional fields.
+        if not data:
+            return
         flags = data[0]
-        hr_format_uint16 = flags & 0x01
-        rr_present = (flags >> 4) & 0x01
-
         offset = 1
-        if hr_format_uint16:
-            bpm = int.from_bytes(data[offset:offset + 2], byteorder="little")
-            offset += 2
-        else:
-            bpm = data[offset]
-            offset += 1
+        try:
+            if flags & 0x01:
+                if len(data) < offset + 2:
+                    return
+                bpm = int.from_bytes(data[offset:offset + 2], "little")
+                offset += 2
+            else:
+                if len(data) < offset + 1:
+                    return
+                bpm = data[offset]
+                offset += 1
 
-        if (flags >> 3) & 0x01:
-            offset += 2
-
-        rr_intervals = []
-        if rr_present:
-            while offset + 1 < len(data):
-                rr_raw = int.from_bytes(data[offset:offset + 2], byteorder="little")
-                rr_ms = round((rr_raw / 1024.0) * 1000.0, 1)
-                rr_intervals.append(rr_ms)
+            if flags & 0x08:  # Energy Expended
+                if len(data) < offset + 2:
+                    return
                 offset += 2
 
-        self.bridge.hr_received.emit(bpm, rr_intervals)
+            rr_intervals = []
+            if flags & 0x10:  # RR-Interval present
+                while offset + 1 < len(data):
+                    rr_raw = int.from_bytes(data[offset:offset + 2], "little")
+                    rr_intervals.append(round((rr_raw / 1024.0) * 1000.0, 1))
+                    offset += 2
 
-    async def _connect_with_retry(self, max_retry_sec: float = 20.0):
+            if 0 < bpm <= 300:
+                self.bridge.hr_received.emit(bpm, rr_intervals)
+        except (IndexError, ValueError, TypeError) as exc:
+            print(f"[BLE HR Packet Error]: {exc!r}")
+
+    async def _read_battery(self, client):
+        try:
+            raw = await client.read_gatt_char(BATTERY_LEVEL_CHAR_UUID)
+            if raw and len(raw) >= 1:
+                level = int(raw[0])
+                if 0 <= level <= 100:
+                    self.bridge.battery_received.emit(level)
+                    return
+            print("[BLE Battery Error]: Empty or invalid Battery Level characteristic")
+            self.bridge.battery_received.emit(-1)
+        except Exception as exc:
+            # Some bands do not expose the standard Battery Service.
+            print(f"[BLE Battery Error]: {exc!r}")
+            self.bridge.battery_received.emit(-1)
+
+    async def _battery_poll_loop(self, client):
+        try:
+            while self.client is client and client.is_connected:
+                await self._read_battery(client)
+                # Battery capacity is expected to last months; a 10-minute
+                # refresh is sufficient and keeps BLE traffic low.
+                await asyncio.sleep(600)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[BLE Battery Poll Error]: {exc!r}")
+
+    async def _find_device(self, target_norm: str, force_refresh: bool = False):
+        """Return a recent platform BLE handle, optionally forcing discovery."""
+        cached = self.discovered_devices.get(target_norm)
+        cached_at = self.discovered_at.get(target_norm, 0.0)
+        if (not force_refresh and cached is not None
+                and time.monotonic() - cached_at < 15.0):
+            return cached
+
+        if self._scan_lock is None:
+            self._scan_lock = asyncio.Lock()
+        async with self._scan_lock:
+            cached = self.discovered_devices.get(target_norm)
+            cached_at = self.discovered_at.get(target_norm, 0.0)
+            if (not force_refresh and cached is not None
+                    and time.monotonic() - cached_at < 15.0):
+                return cached
+            # Remove the target's old handle before a refresh. If it is not
+            # seen this time, do not accidentally return the stale handle.
+            self.discovered_devices.pop(target_norm, None)
+            self.discovered_at.pop(target_norm, None)
+            devices = await BleakScanner.discover(
+                timeout=12.0,
+                return_adv=True,
+                scanning_mode="active"
+            )
+            scanned_at = time.monotonic()
+            for device, _advertisement in devices.values():
+                normalized = str(device.address).lower()
+                self.discovered_devices[normalized] = device
+                self.discovered_at[normalized] = scanned_at
+            return self.discovered_devices.get(target_norm)
+
+
+    async def _connect_with_retry(self, max_retry_sec: float = 60.0):
         if not self.target_address:
-            self.bridge.status_changed.emit("Select or enter MAC/UUID first.", False)
+            self._set_state(
+                "disconnected",
+                "Select or enter the band's Bluetooth identifier first.",
+                False
+            )
             return
 
-        if self.client is not None:
-            old_client = self.client
-            self.client = None
+        await self._stop_battery_poll()
+
+        # Clean up any previous connection.
+        old_client = self.client
+        self.client = None
+
+        if old_client is not None:
             try:
                 await old_client.disconnect()
-            except Exception:
-                pass
-            await asyncio.sleep(1.5)
+            except Exception as exc:
+                print(f"[BLE Old Client Cleanup]: {exc!r}")
 
-        deadline = time.monotonic() + max_retry_sec
-        attempt = 0
+        deadline = time.monotonic() + max(60.0, max_retry_sec)
         target_norm = self.target_address.strip().lower()
+        attempt = 0
+        last_error = "Band was not discovered nearby."
+
+        # Progressively longer waits between attempts.
+        retry_delays = (1.0, 2.0, 4.0, 6.0, 8.0)
 
         while time.monotonic() < deadline and not self.manual_disconnect:
             attempt += 1
-            remaining = max(1, int(deadline - time.monotonic()))
-            self.bridge.status_changed.emit(
-                f"Connecting (try {attempt}, {remaining}s left)...", False
-            )
             client = None
-            try:
-                found_device = None
-                devices = await BleakScanner.discover(timeout=4.0, scanning_mode="active")
-                for d in devices:
-                    if d.address.lower() == target_norm:
-                        found_device = d
-                        break
 
-                if found_device is None:
-                    await asyncio.sleep(1.0)
-                    continue
+            remaining = max(0, int(deadline - time.monotonic()))
+
+            self._set_state(
+                "connecting",
+                f"Connecting to {self.target_address} "
+                f"(attempt {attempt}, {remaining}s remaining)...",
+                False
+            )
+
+            try:
+                # Always get a fresh BLE device handle before connecting.
+                device = await self._find_device(
+                    target_norm,
+                    force_refresh=True
+                )
+
+                if device is None:
+                    raise LookupError(
+                        "Band not found during fresh Bluetooth scan."
+                    )
+
+                print(
+                    f"[BLE] Attempt {attempt}: "
+                    f"Connecting using fresh device handle {device.address}"
+                )
 
                 client = BleakClient(
-                    found_device,
+                    device,
                     disconnected_callback=self._on_unexpected_disconnect,
-                    timeout=8.0
+                    timeout=20.0
                 )
+
                 await client.connect()
 
                 if not client.is_connected:
-                    await asyncio.sleep(1.0)
-                    continue
+                    raise ConnectionError(
+                        "Bluetooth connection did not complete."
+                    )
 
-                if not client.services:
-                    await asyncio.sleep(0.8)
+                # Confirm the heart-rate service is accessible.
+                await client.start_notify(
+                    HR_MEASUREMENT_CHAR_UUID,
+                    self._notification_handler
+                )
 
-                try:
-                    bat_bytes = await client.read_gatt_char(BATTERY_LEVEL_CHAR_UUID)
-                    if bat_bytes:
-                        self.bridge.battery_received.emit(int(bat_bytes[0]))
-                except Exception:
-                    self.bridge.battery_received.emit(-1)
+                self.client = client
 
-                packet_event = asyncio.Event()
+                self._set_state(
+                    "connected",
+                    f"Connected: {self.target_address}",
+                    True
+                )
 
-                def _verified_handler(sender, data: bytearray):
-                    packet_event.set()
-                    self._notification_handler(sender, data)
+                print(f"[BLE] Successfully connected on attempt {attempt}")
 
-                await client.start_notify(HR_MEASUREMENT_CHAR_UUID, _verified_handler)
-                self.bridge.status_changed.emit("Waiting for pulse signal...", False)
+                # Battery remains local-only.
+                self.battery_task = asyncio.create_task(
+                    self._battery_poll_loop(client)
+                )
 
-                try:
-                    await asyncio.wait_for(packet_event.wait(), timeout=5.0)
-                    self.client = client
-                    self.bridge.status_changed.emit(f"Connected: {self.target_address}", True)
-                    return
-                except asyncio.TimeoutError:
-                    await client.disconnect()
-                    await asyncio.sleep(1.0)
+                return
 
-            except Exception as e:
-                print(f"[BLE Reconnect Attempt {attempt} Error]: {e}")
+            except asyncio.CancelledError:
                 if client is not None:
                     try:
                         await client.disconnect()
                     except Exception:
                         pass
-                if time.monotonic() + 1.0 < deadline and not self.manual_disconnect:
-                    await asyncio.sleep(1.0)
-                else:
-                    break
+                return
+
+            except Exception as exc:
+                last_error = str(exc) or repr(exc)
+
+                print(
+                    f"[BLE Connect Attempt {attempt} Failed]: "
+                    f"{type(exc).__name__}: {exc!r}"
+                )
+
+                # Invalidate the cached handle so it cannot be reused.
+                self.discovered_devices.pop(target_norm, None)
+                self.discovered_at.pop(target_norm, None)
+
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception as cleanup_exc:
+                        print(
+                            f"[BLE Failed Client Cleanup]: {cleanup_exc!r}"
+                        )
+
+            if self.manual_disconnect:
+                break
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            delay = retry_delays[
+                min(attempt - 1, len(retry_delays) - 1)
+            ]
+
+            await asyncio.sleep(min(delay, remaining))
 
         if not self.manual_disconnect:
-            self.bridge.status_changed.emit(f"Reconnect timed out ({int(max_retry_sec)}s).", False)
-
+            self._set_state(
+                "disconnected",
+                f"Couldn't connect to {self.target_address}. "
+                f"Tried for approximately {int(max_retry_sec)} seconds. "
+                f"Last error: {last_error}",
+                False
+            )
 
 DEFAULT_ZONE_COLORS = {
     "zone1": "#64B5F6",
@@ -274,7 +491,7 @@ DEFAULT_ZONE_THRESHOLDS = {
 }
 
 
-class CoospoApp(QMainWindow):
+class HeartRateMonitorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BLE Heart Rate Monitor")
@@ -306,6 +523,14 @@ class CoospoApp(QMainWindow):
         self.ble = BLEWorker(self.bridge)
         self.ble.auto_reconnect_enabled = self.config["auto_reconnect"]
 
+        # One persistent sender thread serializes telemetry requests and reuses
+        # a requests.Session instead of creating one thread per heart-rate packet.
+        self._server_queue = queue.Queue(maxsize=500)
+        self._server_worker = threading.Thread(
+            target=self._server_sender_loop, name="Telemetry-Sender", daemon=True
+        )
+        self._server_worker.start()
+
         self.init_ui()
         self.refresh_saved_device_combos()
         self.apply_theme()
@@ -316,7 +541,7 @@ class CoospoApp(QMainWindow):
         self.watchdog_timer.start(1000)
 
         if self.config["auto_connect_launch"] and self.config["device_address"]:
-            QTimer.singleShot(500, lambda: self.ble.connect_device(self.config["device_address"], 20.0))
+            QTimer.singleShot(500, lambda: self.ble.connect_device(self.config["device_address"], 30.0))
 
     def load_config(self) -> dict:
         defaults = {
@@ -325,7 +550,7 @@ class CoospoApp(QMainWindow):
             "client_name": "",
             "auto_connect_launch": True,
             "auto_reconnect": True,
-            "server_url": "http://127.0.0.1/api/telemetry",
+            "server_url": "http://192.168.178.46/api/telemetry",
             "server_sync": False,
             "time_display_mode": "actual",
             "timezone_mode": "local",
@@ -604,11 +829,11 @@ class CoospoApp(QMainWindow):
         ble_layout.addRow("MAC / UUID:", self.input_mac)
 
         auto_row = QHBoxLayout()
-        self.chk_auto_launch = QCheckBox("Auto-connect on launch (max 20s)")
+        self.chk_auto_launch = QCheckBox("Auto-connect on launch (max 30s)")
         self.chk_auto_launch.setChecked(self.config["auto_connect_launch"])
         self.chk_auto_launch.toggled.connect(self.save_config)
 
-        self.chk_auto_reconnect = QCheckBox("Auto-reconnect if dropped (max 20s)")
+        self.chk_auto_reconnect = QCheckBox("Auto-reconnect if dropped (max 30s)")
         self.chk_auto_reconnect.setChecked(self.config["auto_reconnect"])
         self.chk_auto_reconnect.toggled.connect(self.save_config)
 
@@ -846,11 +1071,11 @@ class CoospoApp(QMainWindow):
         if addr:
             self.input_mac.setText(addr)
             self.save_config()
-            self.ble.connect_device(addr, 20.0)
+            self.ble.connect_device(addr, 60.0)
 
     def connect_band(self):
         self.save_config()
-        self.ble.connect_device(self.input_mac.text().strip(), 20.0)
+        self.ble.connect_device(self.input_mac.text().strip(), 60.0)
 
     def on_scan_results(self, devices):
         self.combo_devices.clear()
@@ -872,6 +1097,9 @@ class CoospoApp(QMainWindow):
         self.lbl_conn_status.setText(prefix + msg)
         color = "#00E676" if connected else "#93C5FD"
         self.lbl_conn_status.setStyleSheet(f"color: {color}; font-weight: bold;")
+        scanning = msg.startswith("Scanning nearby")
+        self.btn_scan.setEnabled(not scanning)
+        self.btn_scan.setText("Scanning..." if scanning else "Scan Nearby")
     def on_zone_thresholds_changed(self):
         self.lbl_z5_desc.setText(f"Above {self.spin_z4.value()} BPM")
         self.save_config()
@@ -917,7 +1145,7 @@ class CoospoApp(QMainWindow):
             and self.input_mac.text().strip()
         ):
             self.stale_reconnect_triggered = True
-            self.ble.connect_device(self.input_mac.text().strip(), 20.0)
+            self.ble.connect_device(self.input_mac.text().strip(), 30.0)
 
         if self.is_recording:
             self.blink_state = not self.blink_state
@@ -982,7 +1210,7 @@ class CoospoApp(QMainWindow):
                 "rr_intervals_ms": rr_intervals
             }
             url = self.input_server.text().strip()
-            threading.Thread(target=self._send_to_server, args=(url, payload), daemon=True).start()
+            self._queue_server_payload(url, payload)
 
     def refresh_graphs(self):
         if not self.bpm_history:
@@ -1130,11 +1358,39 @@ class CoospoApp(QMainWindow):
         else:
             QMessageBox.warning(self, "Upload Failed", "Could not reach server. Check server URL in Settings.")
 
-    def _send_to_server(self, url: str, payload: dict):
+    def _queue_server_payload(self, url: str, payload: dict):
+        if not url:
+            return
         try:
-            requests.post(url, json=payload, timeout=2.0)
-        except Exception:
-            pass
+            self._server_queue.put_nowait((url, payload))
+        except queue.Full:
+            # Keep the newest live telemetry rather than allowing an unbounded backlog.
+            try:
+                self._server_queue.get_nowait()
+                self._server_queue.task_done()
+            except queue.Empty:
+                pass
+            try:
+                self._server_queue.put_nowait((url, payload))
+            except queue.Full:
+                pass
+
+    def _server_sender_loop(self):
+        session = requests.Session()
+        while True:
+            item = self._server_queue.get()
+            try:
+                if item is None:
+                    return
+                url, payload = item
+                try:
+                    response = session.post(url, json=payload, timeout=3.0)
+                    if not response.ok:
+                        print(f"[Server Sync] HTTP {response.status_code}: {response.text[:200]}")
+                except requests.RequestException as exc:
+                    print(f"[Server Sync Error]: {exc!r}")
+            finally:
+                self._server_queue.task_done()
     def on_dark_mode_toggled(self, enabled: bool):
         self.save_config()
         self.apply_theme()
@@ -1364,6 +1620,6 @@ class CoospoApp(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
-    window = CoospoApp()
+    window = HeartRateMonitorApp()
     window.show()
     sys.exit(app.exec())
