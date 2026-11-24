@@ -39,12 +39,18 @@ graph LR
     Completed --> comp11["Improved backend logic"]
     Completed --> comp12["Better discovery"]
     Completed --> comp13["Improved timings"]
-    M5 & comp10 & comp11 & comp12 & comp13 --> M6(["Improved Performance"]):::doneMilestone
+    M5 & comp10 & comp11 & comp12 & comp13 --> M6(["Improved Performance (v1.3.0)"]):::doneMilestone
+
+    Completed --> comp14["Fixed release.yml"]
+    M6 & comp14 --> M7(["Fixed yml (v1.3.1)"]):::doneMilestone
+
+    Completed --> comp15["Updated Roadmap"]
+    M7 & comp15 --> M8(["Roadmap Update (v1.3.2)"]):::doneMilestone
 
 
     %% Next branch
     Next --> next1["User Testing"]
-    M6 & next1 --> M200(["Next Version (v2.0.0)"]):::doneMilestone
+    M8 & next1 --> M200(["Next Version (v2.0.0)"]):::doneMilestone
 
     %% Future Plans branch
     Future --> future1["Mobile Support"]
