@@ -25,7 +25,7 @@ graph LR
 
     Completed --> comp4["User settings"]
     Completed --> comp5["Downloadable Executable"]
-    comp4 & comp5 --> M3(["(v1.1.0)"]):::doneMilestone
+    comp4 & comp5 --> M3(["USer settings (v1.1.0)"]):::doneMilestone
 
     Completed --> comp6["Updated Namings"]
     M3 & comp6 --> M4(["Generic Naming (v1.1.1)"]):::doneMilestone
@@ -35,11 +35,16 @@ graph LR
     Completed --> comp9["OBS Overlay"]
     M4 & comp7 & comp8 & comp9 --> M5(["Updated layout and colors (v1.2.0)"]):::doneMilestone
 
+    Completed --> comp10["Updated scan and connection logic"]
+    Completed --> comp11["Improved backend logic"]
+    Completed --> comp12["Better discovery"]
+    Completed --> comp13["Improved timings"]
+    M5 & comp10 & comp11 & comp12 & comp13 --> M6(["Improved Performance"]):::doneMilestone
 
 
     %% Next branch
     Next --> next1["User Testing"]
-    M5 & next1 --> M200(["Next Version (v2.0.0)"]):::doneMilestone
+    M6 & next1 --> M200(["Next Version (v2.0.0)"]):::doneMilestone
 
     %% Future Plans branch
     Future --> future1["Mobile Support"]

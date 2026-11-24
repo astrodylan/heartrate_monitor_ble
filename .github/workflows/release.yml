@@ -73,23 +73,23 @@ jobs:
 
       - name: Prepare Markdown files for PDF
         run: |
-          mkdir -p build/manual
-          cp -r docs/manual/* build/manual/
-          find build/manual -name "*.md" -exec sed -i '/^\[Next:/d' {} +
+          awk 'FNR==1 && NR!=1 {print "\n"} {print}' docs/manual/[0-9]*.md > docs/manual/pdf.md
+          sed -i '/^\[Next:/d' docs/manual/pdf.md
 
       - name: Generate PDF Manual
         uses: docker://pandoc/extra:latest
         with:
           args: >
-            build/manual/*.md
+            docs/manual/pdf.md
             -o HeartrateMonitor-Manual.pdf
-            --resource-path=build/manual
+            --resource-path=docs/manual
             --pdf-engine=weasyprint
             --toc
             --toc-depth=2
             --number-sections
-            --metadata title="App User Manual"
+            --metadata title="HeartRateMonitor User Manual"
             --metadata date="${{ github.ref_name }}"
+
 
       - name: Upload manual artifact for release
         uses: actions/upload-artifact@v4
