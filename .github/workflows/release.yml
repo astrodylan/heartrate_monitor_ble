@@ -83,19 +83,19 @@ jobs:
             docs/manual/pdf.md
             -o HeartrateMonitor-Manual.pdf
             --resource-path=docs/manual
-            --pdf-engine=weasyprint
+            --pdf-engine=xelatex
             --toc
             --toc-depth=2
             --number-sections
             --metadata title="HeartRateMonitor User Manual"
             --metadata date="${{ github.ref_name }}"
 
-
       - name: Upload manual artifact for release
         uses: actions/upload-artifact@v4
         with:
-          name: App-Manual.pdf
-          path: App-Manual.pdf
+          name: HeartrateMonitor-Manual.pdf
+          path: HeartrateMonitor-Manual.pdf
+
 
   # Job 3: Wait for all builds to finish, then publish one clean Release
   publish-release:
