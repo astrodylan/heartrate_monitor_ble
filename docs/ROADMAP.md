@@ -82,6 +82,7 @@ graph LR
 - [ ] Add configurable positions of users on the overlay/server interface
 - [ ] add a wway to download the uploaded sessions from the server (dropdown for format?)
 - [ ] toggle record from the server side in addition to client side
+- [ ] Make configurable obs overlays
 
 
 ### ⚪ Future Plans
