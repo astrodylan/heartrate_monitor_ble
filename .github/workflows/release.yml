@@ -16,21 +16,21 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: HartRateMonitor-Windows.exe
-            build_cmd: pyinstaller --noconfirm --onefile --windowed --name "HartRateMonitor" --collect-all bleak client.py
-            dist_path: client/dist/HartRateMonitor.exe
+            artifact_name: heartRateMonitor-Windows.exe
+            build_cmd: pyinstaller --noconfirm --onefile --windowed --name "heartRateMonitor" --collect-all bleak client.py
+            dist_path: client/dist/heartRateMonitor.exe
 
           - os: ubuntu-latest
-            artifact_name: HartRateMonitor-Linux
-            build_cmd: pyinstaller --noconfirm --onefile --name "HartRateMonitor" --collect-all bleak client.py
-            dist_path: client/dist/HartRateMonitor
+            artifact_name: heartRateMonitor-Linux
+            build_cmd: pyinstaller --noconfirm --onefile --name "heartRateMonitor" --collect-all bleak client.py
+            dist_path: client/dist/heartRateMonitor
 
           - os: macos-latest
-            artifact_name: HartRateMonitor-macOS.zip
+            artifact_name: heartRateMonitor-macOS.zip
             build_cmd: |
-              pyinstaller --noconfirm --windowed --name "HartRateMonitor" --collect-all bleak --osx-bundle-identifier "com.coospo.h6monitor" client.py
-              cd dist && zip -r HartRateMonitor-macOS.zip HartRateMonitor.app
-            dist_path: client/dist/HartRateMonitor-macOS.zip
+              pyinstaller --noconfirm --windowed --name "heartRateMonitor" --collect-all bleak --osx-bundle-identifier "com.coospo.h6monitor" client.py
+              cd dist && zip -r heartRateMonitor-macOS.zip heartRateMonitor.app
+            dist_path: client/dist/heartRateMonitor-macOS.zip
 
     runs-on: ${{ matrix.os }}
 

@@ -3,16 +3,14 @@
 > **Vision:** Create a system to detect, stream, record and present live heartrate data for livestreaming purposes  
 > **Status Legend:** 🟢 Completed | 🟡 Planned | ⚪ Backlog 
 ---
-# Roadmap Overview
+# Roadmap Past Versions
 
 ```mermaid
 graph LR
-    Root["🎯 Project Vision"]
+    Root["🎯 Project Overview"]
     
     subgraph helper1[" "]
         Root --> Completed["🟢 Completed"]
-        Root --> Next["🟡 Next Steps"]
-        Root --> Future["⚪ Future Plans"]
     end
 
     %% Completed Plans
@@ -48,13 +46,7 @@ graph LR
     M7 & comp15 --> M8(["Roadmap Update (v1.3.2)"]):::doneMilestone
 
 
-    %% Next branch
-    Next --> next1["User Testing"]
-    M8 & next1 --> M200(["Next Version (v2.0.0)"]):::doneMilestone
 
-    %% Future Plans branch
-    Future --> future1["Mobile Support"]
-    Future --> future2["Analytics Dashboard"]
 
     %% Hide the subgraph outline, background, and text
     style helper1 fill:none,stroke:none,color:transparent
@@ -76,7 +68,7 @@ graph LR
 ## Future of the Development
 
 ### 🟡 Next Steps
-- [ ] Make connecting the device easier
+- [x] Make connecting the device easier
 - [ ] Test with more and different devices
 - [ ] Update the readme with install/use manual
 - [ ] Add configurable positions of users on the overlay/server interface
@@ -90,11 +82,3 @@ graph LR
 - [ ] add a 'analyse' button where you can analyse recorded sessions
 - [ ] make it work with many different devices
 
----
-
-## ⚠️ Risks & Mitigations
-
-| Risk | Impact | Mitigation |
-| :--- | :--- | :--- |
-| Scope creep during core build | High | Freeze MVP scope until Milestone 1 ships |
-| External dependencies | Medium | Build mock endpoints so work can proceed in parallel |
